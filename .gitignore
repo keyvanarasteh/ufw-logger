@@ -1,0 +1,17 @@
+# Gizli bilgiler (Telegram token / chat id)
+*.conf
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editör / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
