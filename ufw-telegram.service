@@ -10,6 +10,10 @@ EnvironmentFile=/etc/ufw-telegram.conf
 ExecStart=/usr/bin/python3 /usr/local/bin/ufw_telegram.py
 Restart=always
 RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target

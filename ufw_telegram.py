@@ -4,6 +4,7 @@ import re
 import requests
 import sys
 import os
+import queue
 import socket
 import threading
 import time
@@ -73,14 +74,48 @@ stats = Counter()
 top_src = Counter()
 
 
+outbox = queue.Queue(maxsize=500)   # gönderim ayrı iş parçacığında: ağ yavaşlasa da log okuma durmaz
+
+
 def send_telegram(message):
+    global suppressed
     try:
-        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        response = requests.post(API_URL, json=payload, timeout=5)
-        if response.status_code != 200:
-            print(f"Telegram hatası: {response.text}", file=sys.stderr)
-    except Exception as e:
-        print(f"Bağlantı hatası: {e}", file=sys.stderr)
+        outbox.put_nowait(message)
+    except queue.Full:
+        with lock:
+            suppressed += 1
+
+
+def deliver(message):
+    """Telegram'a gönder; 429 (flood) ve geçici ağ hatalarında bekleyip yeniden dene."""
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    for attempt in range(4):
+        try:
+            response = requests.post(API_URL, json=payload, timeout=10)
+        except requests.RequestException as e:
+            # Hata metni URL'yi (dolayısıyla token'ı) içerebilir: yalnızca türünü yaz
+            print(f"Bağlantı hatası: {type(e).__name__}", file=sys.stderr)
+            time.sleep(2 ** attempt)
+            continue
+        if response.status_code == 200:
+            return
+        if response.status_code == 429:
+            try:
+                wait = int(response.json().get("parameters", {}).get("retry_after", 5))
+            except ValueError:
+                wait = 5
+            time.sleep(min(wait, 60) + 1)
+            continue
+        if response.status_code == 400 and "parse_mode" in payload:
+            payload.pop("parse_mode")   # biçimlendirme hatası: düz metin olarak tekrar dene
+            continue
+        print(f"Telegram hatası: {response.status_code} {response.text[:200]}", file=sys.stderr)
+        return
+
+
+def sender_loop():
+    while True:
+        deliver(outbox.get())
 
 
 def rate_limited_send(message):
@@ -278,6 +313,7 @@ def prune_loop():
 
 
 def main():
+    threading.Thread(target=sender_loop, daemon=True).start()
     threading.Thread(target=prune_loop, daemon=True).start()
     if SUMMARY_HOURS > 0:
         threading.Thread(target=summary_loop, daemon=True).start()
@@ -294,6 +330,9 @@ def main():
             parse_and_send(line.strip())
     except KeyboardInterrupt:
         process.terminate()
+        return
+    # journalctl beklenmedik şekilde bittiyse systemd yeniden başlatsın
+    sys.exit(f"journalctl sonlandı (kod {process.wait()})")
 
 
 if __name__ == "__main__":

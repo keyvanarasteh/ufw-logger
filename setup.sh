@@ -7,6 +7,9 @@ BIN_DST="/usr/local/bin/ufw_telegram.py"
 SVC_NAME="ufw-telegram.service"
 SVC_DST="/etc/systemd/system/${SVC_NAME}"
 CONF="/etc/ufw-telegram.conf"
+AUDIT_DST="/usr/local/bin/ufw_audit.py"
+AUDIT_SVC="ufw-telegram-audit.service"
+AUDIT_TIMER="ufw-telegram-audit.timer"
 
 # ---------- Yardımcılar ----------
 die() { echo "HATA: $*" >&2; exit 1; }
@@ -292,15 +295,20 @@ filters_menu() {
 # ---------- Kurulum ----------
 install_all() {
     header
-    [[ -f "$SCRIPT_DIR/ufw_telegram.py" && -f "$SCRIPT_DIR/ufw-telegram.service" ]] \
-        || { err "ufw_telegram.py / ufw-telegram.service bu dizinde bulunamadı"; pause; return 1; }
+    local f
+    for f in ufw_telegram.py ufw_audit.py "$SVC_NAME" "$AUDIT_SVC" "$AUDIT_TIMER"; do
+        [[ -f "$SCRIPT_DIR/$f" ]] || { err "$f bu dizinde bulunamadı"; pause; return 1; }
+    done
 
     check_deps || { pause; return 1; }
     check_ufw
 
     spin "Dosyalar kopyalanıyor..." bash -c "
         install -m 755 '$SCRIPT_DIR/ufw_telegram.py' '$BIN_DST' &&
-        install -m 644 '$SCRIPT_DIR/ufw-telegram.service' '$SVC_DST'" \
+        install -m 755 '$SCRIPT_DIR/ufw_audit.py' '$AUDIT_DST' &&
+        install -m 644 '$SCRIPT_DIR/ufw-telegram.service' '$SVC_DST' &&
+        install -m 644 '$SCRIPT_DIR/$AUDIT_SVC' '/etc/systemd/system/$AUDIT_SVC' &&
+        install -m 644 '$SCRIPT_DIR/$AUDIT_TIMER' '/etc/systemd/system/$AUDIT_TIMER'" \
         && ok "Dosyalar yerleştirildi" || { err "Kopyalama başarısız"; pause; return 1; }
 
     if [[ -f "$CONF" ]] && ! gum confirm "Mevcut yapılandırma var. Yeniden yapılandırılsın mı?"; then
@@ -324,8 +332,9 @@ install_all() {
 uninstall_all() {
     header
     gum confirm --default=No "Servis ve dosyalar kaldırılsın mı?" || return 0
-    systemctl disable --now "$SVC_NAME" 2>/dev/null
-    rm -f "$SVC_DST" "$BIN_DST"
+    systemctl disable --now "$SVC_NAME" "$AUDIT_TIMER" 2>/dev/null
+    rm -f "$SVC_DST" "$BIN_DST" "$AUDIT_DST" "/etc/systemd/system/$AUDIT_SVC" "/etc/systemd/system/$AUDIT_TIMER"
+    rm -rf /var/lib/ufw-telegram
     systemctl daemon-reload
     gum confirm --default=No "Yapılandırma ($CONF, token içerir) de silinsin mi?" && rm -f "$CONF"
     ok "Kaldırıldı"; pause
@@ -334,11 +343,12 @@ uninstall_all() {
 status() {
     header
     local f
-    for f in "$BIN_DST" "$SVC_DST" "$CONF"; do
+    for f in "$BIN_DST" "$AUDIT_DST" "$SVC_DST" "$CONF"; do
         [[ -e "$f" ]] && ok "$f" || err "$f yok"
     done
     systemctl is-enabled --quiet "$SVC_NAME" 2>/dev/null && ok "Açılışta başlar: evet" || warn "Açılışta başlar: hayır"
     systemctl is-active --quiet "$SVC_NAME" 2>/dev/null && ok "Servis: çalışıyor" || err "Servis: çalışmıyor"
+    systemctl is-active --quiet "$AUDIT_TIMER" 2>/dev/null && ok "Günlük kural denetimi: açık" || warn "Günlük kural denetimi: kapalı"
     command -v ufw >/dev/null && echo "UFW: $(ufw status | head -1) | Loglama: $(ufw_logging_level)"
     echo
     systemctl status "$SVC_NAME" --no-pager -n 10 2>/dev/null | head -20
@@ -360,18 +370,84 @@ view_logs() {
     journalctl -u "$SVC_NAME" -n 50 --no-pager | gum pager
 }
 
+# ---------- Kural seti denetimi ----------
+# Depodaki sürüm varsa onu, yoksa kurulu olanı kullan
+audit_bin() {
+    if [[ -f "$SCRIPT_DIR/ufw_audit.py" ]]; then echo "$SCRIPT_DIR/ufw_audit.py"
+    elif [[ -f "$AUDIT_DST" ]]; then echo "$AUDIT_DST"
+    else return 1; fi
+}
+
+audit_run() { python3 "$(audit_bin)" "$@"; }
+
+audit_apply() {
+    header
+    audit_run --no-color | sed -n '/^SIRALAMA PERFORMANSI/,$p'
+    echo
+    gum style --foreground 244 \
+        "Yalnızca kesişmeyen kurallar yer değiştirir: hiçbir paketin izin/ret kararı değişmez." \
+        "Kural dosyaları yedeklenir, UFW yeniden yüklenir; hata olursa otomatik geri alınır." \
+        "Güvenlik bulguları (KISMI-ETKISIZ, GOLGELEME vb.) otomatik düzeltilmez; onları siz karara bağlayın."
+    gum confirm --default=No "Önerilen sıra uygulansın mı?" || return 0
+    audit_run --quiet --apply --yes
+    pause
+}
+
+audit_timer_toggle() {
+    [[ -f "/etc/systemd/system/$AUDIT_TIMER" ]] || { err "Önce 'Kur / Güncelle' çalıştırın"; pause; return; }
+    if systemctl is-active --quiet "$AUDIT_TIMER"; then
+        systemctl disable --now "$AUDIT_TIMER" && warn "Günlük denetim kapatıldı"
+    else
+        systemctl daemon-reload
+        systemctl enable --now "$AUDIT_TIMER" && ok "Günlük denetim açıldı (bulgular değişirse Telegram'a bildirilir)"
+    fi
+    pause
+}
+
+audit_menu() {
+    audit_bin >/dev/null || { header; err "ufw_audit.py bulunamadı"; pause; return; }
+    while true; do
+        header
+        gum style --foreground 244 "Sıralama performansı, çakışan/etkisiz kurallar ve güvenlik denetimi."
+        local choice secs
+        choice=$(gum choose --cursor "▸ " --header "Kural seti denetimi:" \
+            "Denetimi çalıştır" \
+            "Ayrıntılı rapor (tüm notlar)" \
+            "Trafiği örnekle ve analiz et" \
+            "Önerilen sırayı uygula" \
+            "Raporu Telegram'a gönder" \
+            "Günlük otomatik denetim (aç / kapat)" \
+            "← Geri") || return
+        case "$choice" in
+            "Denetimi"*)   audit_run --no-color | gum pager ;;
+            "Ayrıntılı"*)  audit_run --no-color --verbose | gum pager ;;
+            "Trafiği"*)
+                secs=$(gum input --prompt "Süre (sn) › " --value 60) || continue
+                [[ "$secs" =~ ^[0-9]+$ ]] || { err "Geçersiz süre"; pause; continue; }
+                # Kısa pencerede paket az olur: eşik düşük tutulur, sonucu buna göre yorumlayın
+                audit_run --no-color --sample "$secs" --min-packets 100 | gum pager ;;
+            "Önerilen"*)   audit_apply ;;
+            "Raporu"*)     audit_run --quiet --notify && ok "Gönderildi" || err "Gönderilemedi"; pause ;;
+            "Günlük"*)     audit_timer_toggle ;;
+            *) return ;;
+        esac
+    done
+}
+
 # ---------- Menü ----------
 main_menu() {
     while true; do
         header
         local choice
         choice=$(gum choose --cursor "▸ " --header "Bir işlem seçin:" \
-            "Kur / Güncelle" "Yapılandır (Token & Chat ID)" "Bildirim profili & filtreler" "Durum" \
+            "Kur / Güncelle" "Yapılandır (Token & Chat ID)" "Bildirim profili & filtreler" \
+            "Kural seti denetimi & optimizasyon" "Durum" \
             "Test mesajı gönder" "Servis logları" "Başlat / Durdur" "Kaldır" "Çıkış") || exit 0
         case "$choice" in
             "Kur / Güncelle")               install_all ;;
             "Yapılandır (Token & Chat ID)") configure ;;
             "Bildirim profili & filtreler") filters_menu ;;
+            "Kural seti denetimi & optimizasyon") audit_menu ;;
             "Durum")                        status ;;
             "Test mesajı gönder")           send_test ;;
             "Servis logları")               view_logs ;;

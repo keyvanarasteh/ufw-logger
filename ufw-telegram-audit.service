@@ -1,0 +1,13 @@
+[Unit]
+Description=UFW kural seti denetimi (bulgular değişirse Telegram bildirimi)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/bin/ufw_audit.py --quiet --notify-on-change
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes

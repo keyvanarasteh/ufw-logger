@@ -73,7 +73,7 @@ NONTERMINAL_TARGETS = {
 KNOWN_MODULES = {"tcp", "udp", "multiport", "comment", "conntrack", "state"}
 
 MIN_PACKETS_DEFAULT = 1000      # bunun altında sıralama önerisi verilmez
-DP_STATE_CAP = 400_000          # kesin çözüm için durum üst sınırı
+DP_STATE_CAP = 200_000          # kesin çözüm için durum üst sınırı
 COVER_BUDGET = 20_000           # kapsama analizinde kutu üst sınırı
 
 
@@ -154,7 +154,7 @@ def parse_addr(v, fam):
 
 class Line:
     """Tek bir iptables kural satırı."""
-    __slots__ = ("raw", "chain", "target", "pkts", "nbytes", "atoms", "opaque", "kind", "reject")
+    __slots__ = ("raw", "chain", "target", "pkts", "nbytes", "atoms", "opaque", "kind", "reject", "sub_term")
 
     def __init__(self):
         self.raw = ""
@@ -166,6 +166,7 @@ class Line:
         self.opaque = False  # modellenemeyen ek koşul var: kutusundan AZINI eşleyebilir
         self.kind = "pass"   # allow | deny | return | pass | jump
         self.reject = False
+        self.sub_term = None  # atlanan alt zincirde sonlanan paket (tek çağıranlıysa bilinir)
 
 
 def classify_target(t):
@@ -417,7 +418,8 @@ class Group:
         elif len(verdicts) == 1:
             self.verdict = verdicts.pop()
         if all(ln.pkts is not None for ln in self.lines):
-            self.weight = sum(ln.pkts for ln in self.lines if ln.kind in ("allow", "deny", "return"))
+            self.weight = sum(ln.pkts for ln in self.lines if ln.kind in ("allow", "deny", "return")) + \
+                sum(ln.sub_term or 0 for ln in self.lines if ln.kind == "jump")
 
 
 class Finding:
@@ -520,7 +522,7 @@ def analyze_conflicts(ch):
         hits = f" (isabet: {fmt_int(gj.weight)})" if gj.weight is not None else ""
         if takers and not rem:
             names = ", ".join(t.ref for t in takers)
-            if all(t.verdict == gj.verdict for t in takers):
+            if all(t.verdict == gj.verdict or (gj.verdict == "allow" and t.verdict == "limit") for t in takers):
                 ch.findings.append(Finding(
                     LOW, "GEREKSIZ", f"{gj.ref} gereksiz: önceki kural(lar) aynı kararı zaten veriyor",
                     f"{gj.label}\nTamamı {names} tarafından kapsanıyor{hits}. Silmek zinciri kısaltır.",
@@ -541,27 +543,33 @@ def analyze_conflicts(ch):
                     move_hint(gj, takers[0])))
             continue
 
+        blockers = []   # gj DENY iken trafiğinin bir kısmına önce izin verenler
         for gi in takers:
-            if gi.verdict == gj.verdict:
+            if gi.verdict == gj.verdict or (gj.verdict == "allow" and gi.verdict == "limit"):
+                continue
+            if gi.verdict == "deny" or all(any(subset(y, x) for x in gj.term_boxes) for y in gi.solid_boxes):
+                exceptions += 1     # önce engelleme/dar istisna, sonra genel kural: bilinçli desen
                 continue
             inter = next(intersection(x, y) for x in gj.term_boxes for y in gi.solid_boxes if intersects(x, y))
             where = ch.describe_box(inter)
-            if all(any(subset(y, x) for x in gj.term_boxes) for y in gi.solid_boxes):
-                exceptions += 1     # önce dar istisna, sonra genel kural: bilinçli desen
-                continue
             if gj.verdict == "deny":
-                ch.findings.append(Finding(
-                    MEDIUM, "KISMI-ETKISIZ", f"{gj.ref} [DENY] kısmen etkisiz: {gi.ref} önce izin veriyor",
-                    f"{gj.label}\nKesişim ({where}) için {gi.ref} [{verdict_tr(gi.verdict)}] {gi.label} geçerli; "
-                    f"bu trafik ENGELLENMİYOR.",
-                    [gj.ref, gi.ref],
-                    f"Engelleme önce gelmeli: {gj.ref} kuralını {gi.ref} kuralının üstüne taşıyın." + move_hint(gj, gi)))
+                blockers.append((gi, where))
             else:
                 ch.findings.append(Finding(
                     LOW, "KORELASYON", f"{gj.ref} [{verdict_tr(gj.verdict)}] ile {gi.ref} [{verdict_tr(gi.verdict)}] sıraya bağımlı",
                     f"{gj.label}\nKesişim ({where}) için önce gelen {gi.ref} {gi.label} kazanıyor. "
                     "Niyetiniz buysa sorun yok; değilse sırayı değiştirin.",
                     [gj.ref, gi.ref]))
+        if blockers:
+            first = blockers[0][0]
+            ch.findings.append(Finding(
+                MEDIUM, "KISMI-ETKISIZ",
+                f"{gj.ref} [DENY] kısmen etkisiz: önce gelen {', '.join(g.ref for g, _ in blockers)} izin veriyor",
+                f"{gj.label}\nŞu trafik ENGELLENMİYOR:\n" +
+                "\n".join(f"  • {where}  ← {g.ref} [{verdict_tr(g.verdict)}] {g.label}" for g, where in blockers[:8]) +
+                (f"\n  • ... +{len(blockers) - 8}" if len(blockers) > 8 else ""),
+                [gj.ref] + [g.ref for g, _ in blockers],
+                f"Engelleme önce gelmeli: {gj.ref} kuralını {first.ref} kuralının üstüne taşıyın." + move_hint(gj, first)))
 
     # Yukarı yönlü gereksizlik: sonraki daha genel kural aynı kararı veriyor, arada farklı karar yok
     flagged = {f.refs[0] for f in ch.findings if f.code in ("GEREKSIZ", "GOLGELEME")}
@@ -569,18 +577,21 @@ def analyze_conflicts(ch):
         gi = G[i]
         if not gi.terminal or gi.verdict is None or gi.ref in flagged:
             continue
+        if any(ln.kind not in ("allow", "deny") for ln in gi.lines):
+            continue    # log/limit gibi yan etkisi olan kural gereksiz sayılmaz
         for j in range(i + 1, n):
             gj = G[j]
             if not any_intersect(gi.all_boxes, gj.all_boxes):
                 continue
-            if gj.verdict == gi.verdict and gj.solid_boxes and len(gj.lines) == len(gi.lines) \
-                    and all(any(subset(x, y) for y in gj.solid_boxes) for x in gi.term_boxes):
+            if gj.verdict != gi.verdict or not gj.terminal:
+                break   # araya farklı karar giriyor: gi anlamlı
+            if gj.solid_boxes and all(any(subset(x, y) for y in gj.solid_boxes) for x in gi.term_boxes):
                 ch.findings.append(Finding(
                     LOW, "GEREKSIZ", f"{gi.ref} gereksiz: sonraki {gj.ref} zaten kapsıyor",
                     f"{gi.label}\n{gj.ref} {gj.label} aynı kararı daha geniş kapsamla veriyor ve arada "
                     "farklı karar veren kural yok. Silmek zinciri kısaltır.",
                     [gi.ref, gj.ref], f"Kuralı silin: {gi.ref}"))
-            break   # ilk kesişen sonraki kural belirleyicidir
+                break
 
     if exceptions:
         ch.findings.append(Finding(
@@ -620,10 +631,13 @@ def analyze_security(ch):
             if proto == FULL_PROTO and dp == FULL_PORT:
                 if "ALL" not in seen:
                     seen.add("ALL")
+                    scoped = fi[0] == fi[1]
                     ch.findings.append(Finding(
-                        HIGH, "HER-SEYE-IZIN", f"{g.ref} tüm kaynaklardan tüm trafiğe izin veriyor",
-                        f"{g.label}\nBu kuraldan sonraki hiçbir engelleme çalışmaz; güvenlik duvarı fiilen kapalıdır.",
-                        [g.ref], "Kuralı silin ve yalnızca gereken port/kaynaklara izin verin."))
+                        LOW if scoped else HIGH, "HER-SEYE-IZIN",
+                        f"{g.ref} " + ("bir arayüzden gelen" if scoped else "tüm kaynaklardan") + " tüm trafiğe izin veriyor",
+                        f"{g.label}\n" + ("Arayüz güvenilen bir ağa bağlı değilse risklidir." if scoped else
+                                          "Bu kuraldan sonraki hiçbir engelleme çalışmaz; güvenlik duvarı fiilen kapalıdır."),
+                        [g.ref], "Yalnızca gereken port/kaynaklara izin verin."))
                 continue
             if dp == FULL_PORT:
                 continue
@@ -746,6 +760,8 @@ def _exact(w, p, prec, orig):
                 if cur is None or cand[:2] < cur[:2]:
                     nxt[S2] = cand
                     parent[S2] = j
+            if len(nxt) > DP_STATE_CAP:
+                return None
         states += len(nxt)
         if states > DP_STATE_CAP:
             return None
@@ -1014,7 +1030,7 @@ def ufw_rule_spec(f):
         if "_" in seg:
             d, ifn = seg.split("_", 1)
             parts += [d, "on", ifn]
-        elif seg in ("in", "out") and (seg == "out" or f["route"]):
+        elif seg == "out" and not f["route"]:
             parts.append(seg)
     if f["log"]:
         parts.append(f["log"])
@@ -1049,9 +1065,9 @@ def read_kv(path):
     return out
 
 
-def run(cmd, timeout=30):
+def run(cmd, timeout=30, stdin=None):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=stdin)
         return r.returncode, r.stdout, r.stderr
     except (OSError, subprocess.SubprocessError) as e:
         return 127, "", str(e)
@@ -1124,7 +1140,9 @@ def load_ufw(ufw_dir, dumps, defaults_path):
             with open(path, encoding="utf-8", errors="replace") as fh:
                 uf = UfwFile(path, fh.read())
         except PermissionError:
-            env.append(Finding(INFO, "YETKI", f"{path} okunamadı (root gerekir)"))
+            if not any(f.code == "YETKI" for f in env):
+                env.append(Finding(INFO, "YETKI", "Kural dosyaları okunamadı: tam analiz için root gerekir",
+                                   f"{path} yalnızca root tarafından okunabilir.", fix="sudo python3 " + sys.argv[0]))
             continue
         except OSError:
             continue
@@ -1196,6 +1214,30 @@ def load_generic(text, fam, only):
             if ln.target and ln.pkts is not None:
                 entered_src[ln.target] = entered_src.get(ln.target, 0) + ln.pkts
     builtin = ("INPUT", "FORWARD", "OUTPUT")
+    callers = {}
+    for lines in dump_chains.values():
+        for ln in lines:
+            if ln.kind == "jump":
+                callers[ln.target] = callers.get(ln.target, 0) + 1
+
+    def term_in(name, stack=()):
+        """Zincirde (ve tek çağıranlı alt zincirlerinde) sonlanan paket sayısı; bilinmiyorsa None."""
+        if name in stack or name not in dump_chains:
+            return None
+        total = 0
+        for ln in dump_chains[name]:
+            if ln.pkts is None:
+                return None
+            if ln.kind in ("allow", "deny"):
+                total += ln.pkts
+            elif ln.kind == "jump" and callers.get(ln.target) == 1:
+                total += term_in(ln.target, stack + (name,)) or 0
+        return total
+
+    for lines in dump_chains.values():
+        for ln in lines:
+            if ln.kind == "jump" and callers.get(ln.target) == 1:
+                ln.sub_term = term_in(ln.target)
     for name, lines in dump_chains.items():
         if only and name not in only:
             continue
@@ -1207,8 +1249,8 @@ def load_generic(text, fam, only):
         pname, ppk = policies.get(name, ("-", None))
         default = "allow" if pname == "ACCEPT" else ("deny" if pname in ("DROP", "REJECT") else None)
         if name in builtin:
-            entered = (sum(ln.pkts for ln in lines if ln.kind in ("allow", "deny") and ln.pkts is not None) + ppk) \
-                if ppk is not None else None
+            inside = term_in(name)
+            entered = inside + ppk if ppk is not None and inside is not None else None
         else:
             entered = entered_src.get(name)
         direction = {"INPUT": "in", "OUTPUT": "out", "FORWARD": "forward"}.get(name, "sub")
@@ -1270,10 +1312,9 @@ def apply_plan(plan, files, log):
             st = os.stat(uf.path)
             os.chown(tmp, st.st_uid, st.st_gid)
             if shutil.which(tool):
-                rc_old, _, _ = run([tool, "--test", "-n", uf.path])
-                rc_new, _, err = run([tool, "--test", "-n", tmp])
+                rc_old, _, _ = run([tool, "--test", "-n"], stdin=uf.text)
+                rc_new, _, err = run([tool, "--test", "-n"], stdin=new)
                 if rc_old == 0 and rc_new != 0:
-                    os.unlink(tmp)
                     raise RuntimeError(f"yeni kural dosyası doğrulanamadı: {err.strip()}")
             os.replace(tmp, uf.path)
         rc, out, err = run(["ufw", "reload"], timeout=120)
@@ -1282,6 +1323,8 @@ def apply_plan(plan, files, log):
     except Exception as e:      # geri al
         for path, bak in backups:
             shutil.copy2(bak, path)
+            if os.path.exists(path + ".audit-new"):
+                os.unlink(path + ".audit-new")
         if backups:
             run(["ufw", "reload"], timeout=120)
         log(f"HATA: {e}. Değişiklikler geri alındı.")
@@ -1383,11 +1426,14 @@ def render_text(chains, env, meta, color, verbose):
                 g = ch.groups[j]
                 mark = "  " if j == newpos else ("↑ " if j > newpos else "↓ ")
                 out.append(f"        {newpos + 1:>3}. {mark}{g.ref:>6}  {g.label[:66]}")
-            if pf["cost_lower"] < pf["cost_opt"]:
-                out.append(f"      Kilitler olmasaydı alt sınır {fmt_int(pf['cost_lower'])} olurdu; kesişen kurallar "
-                           "karar değişmesin diye yer değiştirmedi.")
         else:
             out.append("      Mevcut sıra, kesişen kuralları bozmadan elde edilebilecek en iyi sıra.")
+        if pf["cost_lower"] < pf["cost_opt"] * 0.9:
+            out.append(f"      Sıra kilitleri olmasaydı alt sınır {fmt_int(pf['cost_lower'])} kontrol olurdu. Kesişen kurallar, "
+                       "karar değişmesin diye yer değiştirmez.")
+            if any(f.code in ("KISMI-ETKISIZ", "GOLGELEME") for f in ch.findings):
+                out.append("      Yukarıdaki KISMI-ETKISIZ/GOLGELEME düzeltmeleri (engellemeleri üste taşımak) bu kilitlerin "
+                           "bir kısmını da kaldırır: önce onları düzeltip denetimi tekrar çalıştırın.")
     out.append("")
     out.append(P.c("2", "Not: Araç kararları değiştirmeyen yeniden sıralamayı kanıtlanabilir biçimde önerir; güvenlik "
                         "bulguları ise niyet gerektirir. Uygulamadan önce bir uzmanın gözden geçirmesi önerilir."))
@@ -1492,6 +1538,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     files = {}
+    notify_failed = False
     if args.dump or args.mode == "iptables":
         if args.dump:
             with open(args.dump, encoding="utf-8", errors="replace") as fh:
@@ -1548,8 +1595,8 @@ def main(argv=None):
                         fh.write(fp)
                 except OSError:
                     pass
-        if send:
-            send_telegram(render_telegram(chains, env, meta))
+        if send and not send_telegram(render_telegram(chains, env, meta)) and args.notify:
+            notify_failed = True
 
     if args.apply:
         if meta.get("mode") != "ufw":
@@ -1573,7 +1620,7 @@ def main(argv=None):
     if args.exit_code:
         worst = max([f.sev for f in env + [x for ch in chains for x in ch.findings]] or [INFO])
         return 2 if worst == HIGH else (1 if worst == MEDIUM else 0)
-    return 0
+    return 4 if notify_failed else 0
 
 
 if __name__ == "__main__":
