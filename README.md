@@ -64,3 +64,15 @@ sudo journalctl -u ufw-telegram.service -f
 - `ufw logging full` çok yüksek hacimli log üretir ve her satır bir Telegram mesajıdır; Telegram'ın hız sınırına takılabilirsiniz. Genellikle `low` veya `medium` yeterlidir.
 - Token `/etc/ufw-telegram.conf` içinde saklanır; bu dosyayı paylaşmayın veya repoya eklemeyin.
 - Kaldırmak için `./setup.sh` → **Kaldır**.
+
+## Bildirim profilleri ve filtreler
+
+`sudo ./setup.sh` → **Bildirim profili & filtreler**. Varsayılan: sadece `BLOCK` bildirilir, `ALLOW` bildirilmez.
+
+| Profil | Davranış |
+|---|---|
+| 🛑 Engelleme uyarıları | Sadece BLOCK, tekrar birleştirme, tarama tespiti |
+| 🚨 Kritik uyarılar | Sadece kritik portlar (22, 3389, 445, DB...) için BLOCK ve ALLOW |
+| ☑ Kontrol listesi | ALLOW, sadece gelen trafik, gürültü/broadcast filtresi, özel IP yoksayma, tekrar birleştirme, hız sınırı, port tarama tespiti, sunucu adı, günlük özet |
+
+Ayarlar `/etc/ufw-telegram.conf` içinde tutulur (`NOTIFY_ACTIONS`, `ONLY_CRITICAL`, `CRITICAL_PORTS`, `IGNORE_PORTS`, `INBOUND_ONLY`, `DEDUP_SECONDS`, `RATE_LIMIT_PER_MIN`, `SCAN_DETECT`, `SUMMARY_HOURS` ...). Telegram IP aralıkları her zaman yoksayılır; böylece botun kendi trafiği bildirim döngüsü oluşturmaz.

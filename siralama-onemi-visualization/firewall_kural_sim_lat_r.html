@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Güvenlik Duvarı (Firewall) Kural Simülatörü</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* slate-900 */
+            color: #e2e8f0; /* slate-200 */
+            overflow: hidden; /* Prevent scrolling for app-like feel */
+        }
+        
+        .code-font { font-family: 'JetBrains Mono', monospace; }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+        .rule-item {
+            transition: all 0.2s ease;
+        }
+        .rule-item:hover {
+            transform: translateX(4px);
+        }
+
+        /* CPU Meter Animation */
+        .meter-fill {
+            transition: width 0.3s ease-out, background-color 0.3s ease;
+        }
+        
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #feedback-modal {
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col">
+
+    <header class="bg-slate-800 border-b border-slate-700 p-4 flex justify-between items-center shadow-md z-10">
+        <div class="flex items-center gap-3">
+            <i class="fa-solid fa-shield-halved text-blue-500 text-3xl"></i>
+            <div>
+                <h1 class="text-xl font-bold text-white tracking-wide">KuralOptimizasyon <span class="text-blue-500">Simülatörü</span></h1>
+                <p class="text-xs text-slate-400">Firewall Kurallarının Performansa Etkisi</p>
+            </div>
+        </div>
+        <div class="flex gap-2">
+            <button onclick="showInfo()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg text-sm transition-colors">
+                <i class="fa-solid fa-circle-info mr-2"></i>Nasıl Çalışır?
+            </button>
+        </div>
+    </header>
+
+    <div class="flex-1 flex flex-col md:flex-row overflow-hidden">
+        
+        <aside class="w-full md:w-72 bg-slate-800/50 border-r border-slate-700 p-4 flex flex-col overflow-y-auto z-10">
+            <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Senaryolar</h2>
+            <div id="scenario-list" class="flex flex-col gap-3">
+                <!-- Senaryolar buraya JS ile yüklenecek -->
+            </div>
+            
+            <div class="mt-8 bg-slate-800 p-4 rounded-xl border border-slate-700">
+                <h3 class="text-sm font-bold text-white mb-2">Gelen Trafik Özeti</h3>
+                <div id="traffic-summary" class="text-xs space-y-2 code-font">
+                    <!-- Trafik detayları -->
+                </div>
+            </div>
+        </aside>
+
+        <main class="flex-1 flex flex-col relative">
+            
+            <div class="flex-1 flex flex-col lg:flex-row gap-4 p-4 z-10 h-full">
+                
+                <!-- Kural Düzenleyici (Sol Taraf) -->
+                <div class="w-full lg:w-1/3 bg-slate-800 rounded-xl border border-slate-700 flex flex-col shadow-lg overflow-hidden flex-shrink-0">
+                    <div class="p-4 border-b border-slate-700 bg-slate-800/80 flex justify-between items-center">
+                        <h2 class="font-bold text-white"><i class="fa-solid fa-list-ol mr-2 text-indigo-400"></i>Kuralları Sırala</h2>
+                    </div>
+                    
+                    <div class="p-4 bg-slate-900/50 text-xs text-slate-400 border-b border-slate-700">
+                        <p>Kuralları "YUKARI" veya "AŞAĞI" taşıyarak en iyi işlemci (CPU) performansını elde etmeye çalış. Firewall kuralları <b>yukarıdan aşağıya</b> doğru okunur.</p>
+                    </div>
+
+                    <div id="rule-container" class="flex-1 overflow-y-auto p-3 space-y-2">
+                        <!-- Kurallar JS ile eklenecek -->
+                    </div>
+
+                    <div class="p-4 border-t border-slate-700 bg-slate-800 flex justify-center">
+                        <button id="btn-simulate" onclick="startSimulation()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.4)] transition-all flex justify-center items-center gap-2 text-lg">
+                            <i class="fa-solid fa-play"></i> Simülasyonu Başlat
+                        </button>
+                    </div>
+                </div>
+
+                <div class="w-full lg:w-2/3 flex flex-col gap-4">
+                    
+                    <!-- İstatistikler -->
+                    <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 shadow-lg flex gap-4 items-center">
+                        <div class="flex-1">
+                            <div class="flex justify-between mb-1">
+                                <span class="text-sm font-semibold text-slate-300">CPU (İşlemci) Yükü</span>
+                                <span id="cpu-text" class="text-sm font-bold code-font">0%</span>
+                            </div>
+                            <div class="w-full bg-slate-900 rounded-full h-4 border border-slate-700 overflow-hidden relative">
+                                <div id="cpu-bar" class="meter-fill bg-green-500 h-4 w-0"></div>
+                            </div>
+                        </div>
+                        
+                        <div class="w-px h-12 bg-slate-700 mx-2"></div>
+                        
+                        <div class="text-center min-w-[120px]">
+                            <p class="text-xs text-slate-400 mb-1">Toplam Kural Kontrolü</p>
+                            <p id="total-checks" class="text-xl font-bold code-font text-blue-400">0</p>
+                        </div>
+                    </div>
+
+                    <!-- Animasyon Alanı -->
+                    <div class="flex-1 bg-slate-950 rounded-xl border border-slate-700 relative overflow-hidden shadow-inner">
+                        <div class="absolute top-2 left-4 text-xs text-slate-500 font-bold z-10 code-font">INTERNET / DIŞ AĞ</div>
+                        <div class="absolute bottom-2 left-4 text-xs text-slate-500 font-bold z-10 code-font">İÇ AĞ / SUNUCULAR</div>
+                        
+                        <!-- Canvas for drawing rules and packets -->
+                        <canvas id="simCanvas"></canvas>
+                        
+                        <!-- Overlay for simulation status -->
+                        <div id="sim-overlay" class="absolute inset-0 bg-slate-900/80 flex flex-col justify-center items-center z-20">
+                            <i class="fa-solid fa-server text-6xl text-slate-600 mb-4"></i>
+                            <h2 class="text-2xl font-bold text-slate-300 mb-2">Simülasyona Hazır</h2>
+                            <p class="text-slate-400 text-center max-w-md">Kuralları sıralayın ve ağ trafiğinin firewall üzerinden nasıl aktığını görmek için Başlat'a tıklayın.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="feedback-modal" class="fixed inset-0 bg-black/60 flex justify-center items-center z-50 pointer-events-none opacity-0">
+        <div class="bg-slate-800 border border-slate-600 rounded-2xl shadow-2xl max-w-lg w-full p-6 transform scale-95 transition-transform duration-300 pointer-events-auto" id="feedback-content">
+            <div class="text-center mb-6">
+                <div id="feedback-icon" class="inline-flex items-center justify-center w-16 h-16 rounded-full mb-4 text-3xl">
+                    <!-- Icon will be inserted here -->
+                </div>
+                <h2 id="feedback-title" class="text-2xl font-bold text-white mb-2">Sonuç</h2>
+                <p id="feedback-desc" class="text-slate-300">Açıklama metni.</p>
+            </div>
+            
+            <div class="bg-slate-900 p-4 rounded-lg mb-6 border border-slate-700 code-font text-sm">
+                <div class="flex justify-between border-b border-slate-800 pb-2 mb-2">
+                    <span class="text-slate-400">Senin Kontrol Sayın:</span>
+                    <span id="feedback-user-checks" class="text-white font-bold">1,000,000</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-slate-400">En İyi Olası Sayı:</span>
+                    <span id="feedback-best-checks" class="text-green-400 font-bold">500,000</span>
+                </div>
+            </div>
+
+            <button onclick="closeFeedback()" class="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 px-4 rounded-lg transition-colors">
+                Anladım, Devam Et
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // Senaryo Verileri
+        const scenarios = [
+            {
+                id: 'sc1',
+                title: 'Seviye 1: Okul Ağı (Sizin Senaryo)',
+                desc: '1 Milyon istek geliyor. Çoğu okul dışından.',
+                difficulty: 1,
+                packets: [
+                    { type: 'outside', name: 'Okul Dışı (Zararlı/İstenmeyen)', count: 800000, color: '#ef4444' }, // Red
+                    { type: 'web', name: 'Okul İçi Web (Port 80/443)', count: 190000, color: '#22c55e' }, // Green
+                    { type: 'admin', name: 'IT Admin (Port 22)', count: 10000, color: '#3b82f6' } // Blue
+                ],
+                rules: [
+                    { id: 'r1_1', text: 'Okul dışından gelen tüm istekleri REDDET', action: 'deny', targetType: 'outside' },
+                    { id: 'r1_2', text: 'Port 22 (IT Admin) isteklerine İZİN VER', action: 'allow', targetType: 'admin' },
+                    { id: 'r1_3', text: 'Port 80, 443 (Diğerleri) isteklerine İZİN VER', action: 'allow', targetType: 'web' }
+                ],
+                bestOrder: ['r1_1', 'r1_3', 'r1_2'], // Dışarıyı engelle -> Çok olan web'e izin ver -> Az olan admin
+                explanation: 'Dışarıdan gelen devasa trafiği (800.000) en başta engellediğiniz için sistem rahatladı. Kalan trafiğin çoğu web (190.000) olduğu için onu da 2. sıraya koymak IT admin (10.000) kuralından önce gelmeli.'
+            },
+            {
+                id: 'sc2',
+                title: 'Seviye 2: DDoS Saldırısı',
+                desc: 'Hackerlar sunucuyu çökertmek için anlamsız veri yolluyor.',
+                difficulty: 2,
+                packets: [
+                    { type: 'ddos', name: 'Saldırı Trafiği (DDoS)', count: 950000, color: '#ef4444' },
+                    { type: 'normal', name: 'Gerçek Öğrenci Trafiği', count: 50000, color: '#22c55e' }
+                ],
+                rules: [
+                    { id: 'r2_1', text: 'Gerçek Öğrencilere İZİN VER', action: 'allow', targetType: 'normal' },
+                    { id: 'r2_2', text: 'Şüpheli DDoS IP\'lerini REDDET', action: 'deny', targetType: 'ddos' }
+                ],
+                bestOrder: ['r2_2', 'r2_1'],
+                explanation: 'Saldırı altındayken en önemli kural ZARARLI TRAFİĞİ HEMEN DÜŞÜRMEKTİR. Eğer önce öğrencileri ararsanız, 950 bin çöp paket için de kural kontrolü yapmış olursunuz.'
+            },
+            {
+                id: 'sc3',
+                title: 'Seviye 3: İzin Verilenler Arasında Yarış',
+                desc: 'Okulda sadece izin verilen trafik var, ama yoğunluklar farklı.',
+                difficulty: 3,
+                packets: [
+                    { type: 'edu', name: 'EBA / Eğitim Videoları', count: 700000, color: '#8b5cf6' }, // Purple
+                    { type: 'library', name: 'Kütüphane Veritabanı', count: 200000, color: '#06b6d4' }, // Cyan
+                    { type: 'mail', name: 'Öğretmen E-Postaları', count: 100000, color: '#eab308' } // Yellow
+                ],
+                rules: [
+                    { id: 'r3_1', text: 'E-Posta (Port 25/110) İZİN VER', action: 'allow', targetType: 'mail' },
+                    { id: 'r3_2', text: 'EBA/Eğitim IP\'leri İZİN VER', action: 'allow', targetType: 'edu' },
+                    { id: 'r3_3', text: 'Kütüphane IP\'leri İZİN VER', action: 'allow', targetType: 'library' }
+                ],
+                bestOrder: ['r3_2', 'r3_3', 'r3_1'],
+                explanation: 'Sadece "izin verilen" trafiğiniz olsa bile, en çok kullanılan servisi (Eğitim Videoları) en tepeye koymak, paketin hemen 1. kuralda eşleşip geçmesini sağlar. En az kullanılan en sona konmalıdır.'
+            },
+            {
+                id: 'sc4',
+                title: 'Seviye 4: Karmaşık Veri Merkezi',
+                desc: 'Karışık trafik türleri. Mantığı kur!',
+                difficulty: 4,
+                packets: [
+                    { type: 'iot', name: 'IoT Sensörleri (Akıllı Tahtalar)', count: 500000, color: '#f97316' }, // Orange
+                    { type: 'scan', name: 'Zararlı Tarayıcılar', count: 300000, color: '#ef4444' }, // Red
+                    { type: 'db', name: 'Veritabanı Senkronizasyonu', count: 150000, color: '#ec4899' }, // Pink
+                    { type: 'backup', name: 'Gece Yedeklemeleri', count: 50000, color: '#64748b' } // Slate
+                ],
+                rules: [
+                    { id: 'r4_1', text: 'Veritabanı (Port 3306) İZİN VER', action: 'allow', targetType: 'db' },
+                    { id: 'r4_2', text: 'Zararlı Tarayıcı İmzalarını REDDET', action: 'deny', targetType: 'scan' },
+                    { id: 'r4_3', text: 'IoT (Port 1883) İZİN VER', action: 'allow', targetType: 'iot' },
+                    { id: 'r4_4', text: 'Yedekleme Sunucusuna İZİN VER', action: 'allow', targetType: 'backup' },
+                    { id: 'r4_5', text: 'Diğer Her Şeyi REDDET (Default)', action: 'deny', targetType: 'all' } // Catch-all
+                ],
+                bestOrder: ['r4_3', 'r4_2', 'r4_1', 'r4_4', 'r4_5'], 
+                // Alternatively, drop bad first, then high vol good. Let's make best logic based on total checks.
+                // Drop 300k (300k checks) -> Allow 500k (500k * 2 = 1M checks) -> Total 1.3M.
+                // Allow 500k (500k checks) -> Drop 300k (300k * 2 = 600k checks) -> Total 1.1M!
+                // Wait! Mathematical optimization: Order by frequency descending, regardless of allow/drop (if conditions are mutually exclusive).
+                explanation: 'Matematiksel olarak firewall kuralları tamamen Bağımsız ve Kesin koşullara sahipse, en yüksek hacimli trafiği kuralın "İzin ver" veya "Reddet" olmasına bakılmaksızın en tepeye koymak en az işlemci yükünü yaratır. (Not: Güvenlik politikaları bazen "Önce kesinlikle reddetleri yaz" diyebilir, ancak sırf performans açısından hacim önemlidir).'
+            }
+        ];
+
+        // Global State
+        let currentScenarioIndex = 0;
+        let activeRules = [];
+        let isSimulating = false;
+        let animationId;
+        
+        window.onload = function() {
+            renderScenarioMenu();
+            loadScenario(0);
+            
+            // Handle window resize for canvas
+            window.addEventListener('resize', resizeCanvas);
+        };
+
+        function renderScenarioMenu() {
+            const list = document.getElementById('scenario-list');
+            list.innerHTML = '';
+            
+            scenarios.forEach((sc, index) => {
+                const diffStars = '<i class="fa-solid fa-star text-yellow-500"></i>'.repeat(sc.difficulty) + 
+                                  '<i class="fa-regular fa-star text-slate-600"></i>'.repeat(4 - sc.difficulty);
+                
+                const div = document.createElement('div');
+                div.className = `p-3 rounded-lg cursor-pointer transition-all border ${index === currentScenarioIndex ? 'bg-blue-900/40 border-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.2)]' : 'bg-slate-800/80 border-slate-700 hover:bg-slate-700'}`;
+                div.onclick = () => loadScenario(index);
+                div.innerHTML = `
+                    <div class="text-xs mb-1">${diffStars}</div>
+                    <h3 class="font-bold text-sm text-white mb-1">${sc.title}</h3>
+                    <p class="text-xs text-slate-400 line-clamp-2">${sc.desc}</p>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        function loadScenario(index) {
+            if (isSimulating) return; // Prevent changing during sim
+            
+            currentScenarioIndex = index;
+            const sc = scenarios[index];
+            
+            // Deep copy rules for manipulation
+            activeRules = JSON.parse(JSON.stringify(sc.rules));
+            
+            renderScenarioMenu(); // Update selection highlight
+            renderTrafficSummary(sc);
+            renderRules();
+            
+            // Reset UI
+            document.getElementById('sim-overlay').style.display = 'flex';
+            document.getElementById('cpu-bar').style.width = '0%';
+            document.getElementById('cpu-bar').className = 'meter-fill h-4 w-0 bg-green-500';
+            document.getElementById('cpu-text').innerText = '0%';
+            document.getElementById('total-checks').innerText = '0';
+            
+            // Clear canvas
+            const canvas = document.getElementById('simCanvas');
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function renderTrafficSummary(scenario) {
+            const container = document.getElementById('traffic-summary');
+            container.innerHTML = '';
+            
+            let total = scenario.packets.reduce((sum, p) => sum + p.count, 0);
+            
+            scenario.packets.forEach(p => {
+                const percent = ((p.count / total) * 100).toFixed(1);
+                container.innerHTML += `
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full" style="background-color: ${p.color}"></span>
+                            <span class="text-slate-300">${p.name}</span>
+                        </div>
+                        <span class="font-bold text-white">${p.count.toLocaleString()}</span>
+                    </div>
+                    <div class="w-full bg-slate-700 rounded-full h-1.5 mt-1 mb-3">
+                        <div class="h-1.5 rounded-full" style="width: ${percent}%; background-color: ${p.color}"></div>
+                    </div>
+                `;
+            });
+            container.innerHTML += `
+                <div class="border-t border-slate-600 mt-2 pt-2 flex justify-between text-blue-300 font-bold">
+                    <span>Toplam İstek:</span>
+                    <span>${total.toLocaleString()}</span>
+                </div>
+            `;
+        }
+
+        function renderRules() {
+            const container = document.getElementById('rule-container');
+            container.innerHTML = '';
+            
+            activeRules.forEach((rule, index) => {
+                const actionColor = rule.action === 'allow' ? 'text-green-400 bg-green-400/10 border-green-400/30' : 'text-red-400 bg-red-400/10 border-red-400/30';
+                const actionIcon = rule.action === 'allow' ? 'fa-check-circle' : 'fa-ban';
+                
+                const isFirst = index === 0;
+                const isLast = index === activeRules.length - 1;
+
+                container.innerHTML += `
+                    <div class="rule-item bg-slate-700/50 border border-slate-600 rounded-lg p-3 flex items-center gap-3">
+                        <div class="flex flex-col gap-1">
+                            <button onclick="moveRule(${index}, -1)" class="w-8 h-8 rounded bg-slate-600 hover:bg-slate-500 text-white disabled:opacity-30 disabled:hover:bg-slate-600 transition" ${isFirst ? 'disabled' : ''}>
+                                <i class="fa-solid fa-chevron-up"></i>
+                            </button>
+                            <button onclick="moveRule(${index}, 1)" class="w-8 h-8 rounded bg-slate-600 hover:bg-slate-500 text-white disabled:opacity-30 disabled:hover:bg-slate-600 transition" ${isLast ? 'disabled' : ''}>
+                                <i class="fa-solid fa-chevron-down"></i>
+                            </button>
+                        </div>
+                        <div class="font-bold text-slate-500 w-6 text-center text-lg">#${index + 1}</div>
+                        <div class="flex-1">
+                            <p class="text-sm font-semibold text-white">${rule.text}</p>
+                            <div class="inline-flex items-center gap-1 mt-1 text-xs px-2 py-0.5 rounded border ${actionColor}">
+                                <i class="fa-solid ${actionIcon}"></i> ${rule.action.toUpperCase()}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        function moveRule(index, direction) {
+            if (isSimulating) return;
+            
+            const newIndex = index + direction;
+            if (newIndex >= 0 && newIndex < activeRules.length) {
+                // Swap elements
+                [activeRules[index], activeRules[newIndex]] = [activeRules[newIndex], activeRules[index]];
+                renderRules();
+            }
+        }
+
+        function calculateBestPossibleChecks() {
+            // Sort traffic groups descending by count to find mathematical minimum checks
+            // Assuming 1-to-1 rule matching for simplicity in these scenarios
+            const sc = scenarios[currentScenarioIndex];
+            const sortedPackets = [...sc.packets].sort((a, b) => b.count - a.count);
+            let bestChecks = 0;
+            sortedPackets.forEach((p, index) => {
+                bestChecks += p.count * (index + 1);
+            });
+            return bestChecks;
+        }
+
+        function startSimulation() {
+            if (isSimulating) return;
+            isSimulating = true;
+            
+            document.getElementById('sim-overlay').style.display = 'none';
+            const btn = document.getElementById('btn-simulate');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> İşleniyor...';
+            btn.classList.add('opacity-70', 'cursor-not-allowed');
+            
+            const sc = scenarios[currentScenarioIndex];
+            let totalChecks = 0;
+            let packetDetails = [];
+            
+            // Calculate mathematical reality
+            sc.packets.forEach(packet => {
+                let ruleIndexHit = activeRules.length; // Default if no match
+                
+                for (let i = 0; i < activeRules.length; i++) {
+                    if (activeRules[i].targetType === packet.type || activeRules[i].targetType === 'all') {
+                        ruleIndexHit = i + 1; // 1-based index for number of checks
+                        break;
+                    }
+                }
+                
+                const checksForThisGroup = packet.count * ruleIndexHit;
+                totalChecks += checksForThisGroup;
+                
+                // Prepare data for visual particles
+                packetDetails.push({
+                    ...packet,
+                    hitDepth: ruleIndexHit,
+                    action: activeRules[ruleIndexHit - 1]?.action || 'deny' // fallback
+                });
+            });
+
+            // Math to determine CPU load. 
+            // We define a baseline "Worst Case" to scale the 0-100% CPU.
+            let worstChecks = 0;
+            const reverseSorted = [...sc.packets].sort((a, b) => a.count - b.count);
+            reverseSorted.forEach((p, i) => { worstChecks += p.count * (i+1) });
+            
+            const bestChecks = calculateBestPossibleChecks();
+            
+            // Normalize CPU load: if totalChecks == bestChecks -> ~10% CPU. If worst -> ~95% CPU.
+            let cpuLoad = 10 + ((totalChecks - bestChecks) / (worstChecks - bestChecks)) * 85;
+            if (isNaN(cpuLoad)) cpuLoad = 50; // fallback for simple scenarios
+            cpuLoad = Math.min(100, Math.max(10, cpuLoad));
+            
+            // Animate Stats immediately while canvas animation runs
+            animateStats(totalChecks, cpuLoad);
+            
+            // Start Canvas Animation
+            runCanvasAnimation(packetDetails, totalChecks, bestChecks, sc.explanation);
+        }
+
+        function animateStats(targetChecks, targetCpu) {
+            const checksEl = document.getElementById('total-checks');
+            const cpuBar = document.getElementById('cpu-bar');
+            const cpuText = document.getElementById('cpu-text');
+            
+            let currentChecks = 0;
+            const duration = 2000; // 2 seconds
+            const interval = 30;
+            const steps = duration / interval;
+            const increment = targetChecks / steps;
+            
+            const timer = setInterval(() => {
+                currentChecks += increment;
+                if (currentChecks >= targetChecks) {
+                    currentChecks = targetChecks;
+                    clearInterval(timer);
+                }
+                checksEl.innerText = Math.floor(currentChecks).toLocaleString();
+            }, interval);
+
+            // Set CPU Bar
+            setTimeout(() => {
+                cpuBar.style.width = `${targetCpu}%`;
+                cpuText.innerText = `${Math.floor(targetCpu)}%`;
+                
+                if (targetCpu < 40) {
+                    cpuBar.className = 'meter-fill h-4 bg-green-500';
+                } else if (targetCpu < 75) {
+                    cpuBar.className = 'meter-fill h-4 bg-yellow-500';
+                } else {
+                    cpuBar.className = 'meter-fill h-4 bg-red-600 shadow-[0_0_10px_rgba(220,38,38,0.8)]';
+                    cpuText.classList.add('text-red-400');
+                }
+            }, 100);
+        }
+
+        let canvas, ctx;
+        let particles = [];
+        let ruleYPositions = [];
+
+        function resizeCanvas() {
+            canvas = document.getElementById('simCanvas');
+            ctx = canvas.getContext('2d');
+            const parent = canvas.parentElement;
+            canvas.width = parent.clientWidth;
+            canvas.height = parent.clientHeight;
+        }
+
+        function runCanvasAnimation(packetDetails, totalChecks, bestChecks, explanation) {
+            resizeCanvas();
+            particles = [];
+            
+            // Calculate Rule Y lines on canvas
+            const ruleCount = activeRules.length;
+            const startY = 80;
+            const endY = canvas.height - 80;
+            const spacing = (endY - startY) / (ruleCount - 1 || 1);
+            
+            ruleYPositions = [];
+            for(let i=0; i<ruleCount; i++) {
+                ruleYPositions.push(startY + (i * spacing));
+            }
+
+            // Generate particles. Total ~200 particles to represent proportions.
+            const totalPackets = packetDetails.reduce((sum, p) => sum + p.count, 0);
+            const numVisualParticles = 200;
+            
+            packetDetails.forEach(group => {
+                const particleCount = Math.max(1, Math.floor((group.count / totalPackets) * numVisualParticles));
+                
+                for(let i=0; i<particleCount; i++) {
+                    particles.push({
+                        x: Math.random() * (canvas.width * 0.6) + (canvas.width * 0.2), // spawn in middle 60%
+                        y: -20 - (Math.random() * 500), // spawn above screen
+                        color: group.color,
+                        hitDepth: group.hitDepth,
+                        action: group.action,
+                        speed: 3 + Math.random() * 2, // Base speed
+                        state: 'falling', // falling, allowing, denying
+                        targetY: ruleYPositions[group.hitDepth - 1]
+                    });
+                }
+            });
+
+            // Adjust overall simulation speed based on CPU load
+            // High CPU = slow processing = particles fall slower and pile up!
+            const isHeavyLoad = totalChecks > bestChecks * 1.5;
+            const speedMultiplier = isHeavyLoad ? 0.3 : 1.2;
+
+            function draw() {
+                ctx.fillStyle = '#020617'; // very dark slate
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // Draw Rule Lines
+                activeRules.forEach((rule, index) => {
+                    const y = ruleYPositions[index];
+                    
+                    // Draw dashed line
+                    ctx.beginPath();
+                    ctx.setLineDash([5, 5]);
+                    ctx.moveTo(40, y);
+                    ctx.lineTo(canvas.width - 40, y);
+                    ctx.strokeStyle = '#334155'; // slate-700
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // Draw Rule Tag
+                    ctx.fillStyle = '#1e293b';
+                    ctx.fillRect(40, y - 10, 100, 20);
+                    ctx.fillStyle = '#94a3b8';
+                    ctx.font = '10px JetBrains Mono';
+                    ctx.fillText(`Kural #${index+1}`, 45, y + 3);
+                });
+
+                let activeParticles = 0;
+
+                // Update and draw particles
+                particles.forEach(p => {
+                    if (p.state === 'falling') {
+                        p.y += p.speed * speedMultiplier;
+                        
+                        // Check if it reached its target rule
+                        if (p.y >= p.targetY) {
+                            p.y = p.targetY;
+                            p.state = p.action === 'allow' ? 'allowing' : 'denying';
+                        }
+                        activeParticles++;
+                    } else if (p.state === 'allowing') {
+                        // Move to the right (Green side)
+                        p.x += (p.speed * 2) * speedMultiplier;
+                        p.y += (p.speed * 0.5) * speedMultiplier; // slight curve
+                        if (p.x < canvas.width + 10) activeParticles++;
+                    } else if (p.state === 'denying') {
+                        // Move to the left (Red side)
+                        p.x -= (p.speed * 2) * speedMultiplier;
+                        p.y += (p.speed * 0.5) * speedMultiplier;
+                        if (p.x > -10) activeParticles++;
+                    }
+
+                    // Draw particle
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+                    ctx.fillStyle = p.color;
+                    ctx.fill();
+                    
+                    // Add glow
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = p.color;
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                });
+
+                if (activeParticles > 0) {
+                    animationId = requestAnimationFrame(draw);
+                } else {
+                    // Animation finished
+                    endSimulation(totalChecks, bestChecks, explanation);
+                }
+            }
+
+            // Start loop
+            cancelAnimationFrame(animationId);
+            draw();
+        }
+
+        function endSimulation(totalChecks, bestChecks, explanation) {
+            isSimulating = false;
+            
+            // Reset Button
+            const btn = document.getElementById('btn-simulate');
+            btn.innerHTML = '<i class="fa-solid fa-rotate-right"></i> Tekrar Dene';
+            btn.classList.remove('opacity-70', 'cursor-not-allowed');
+
+            // Determine Success
+            const efficiency = bestChecks / totalChecks; // 1.0 is perfect
+            let title = "";
+            let iconHtml = "";
+            let colorClass = "";
+
+            if (efficiency >= 0.95) {
+                title = "Mükemmel Optimizasyon! 🚀";
+                iconHtml = '<i class="fa-solid fa-trophy text-yellow-400"></i>';
+                colorClass = "bg-green-500/20 text-green-400 border-green-500/50";
+            } else if (efficiency >= 0.70) {
+                title = "Fena Değil, Ama Gelişebilir 🤔";
+                iconHtml = '<i class="fa-solid fa-thumbs-up text-blue-400"></i>';
+                colorClass = "bg-blue-500/20 text-blue-400 border-blue-500/50";
+            } else {
+                title = "İşlemci Ağlıyor! 😭";
+                iconHtml = '<i class="fa-solid fa-triangle-exclamation text-red-500"></i>';
+                colorClass = "bg-red-500/20 text-red-400 border-red-500/50";
+            }
+
+            // Populate Modal
+            document.getElementById('feedback-icon').innerHTML = iconHtml;
+            document.getElementById('feedback-icon').className = `inline-flex items-center justify-center w-16 h-16 rounded-full mb-4 text-3xl ${colorClass} border-2`;
+            document.getElementById('feedback-title').innerText = title;
+            document.getElementById('feedback-desc').innerText = "Öğretmen Notu: " + explanation;
+            
+            document.getElementById('feedback-user-checks').innerText = totalChecks.toLocaleString();
+            document.getElementById('feedback-best-checks').innerText = bestChecks.toLocaleString();
+
+            // Show Modal
+            setTimeout(() => {
+                const modal = document.getElementById('feedback-modal');
+                const content = document.getElementById('feedback-content');
+                modal.classList.remove('opacity-0', 'pointer-events-none');
+                content.classList.remove('scale-95');
+                content.classList.add('scale-100');
+            }, 500);
+        }
+
+        function closeFeedback() {
+            const modal = document.getElementById('feedback-modal');
+            const content = document.getElementById('feedback-content');
+            modal.classList.add('opacity-0', 'pointer-events-none');
+            content.classList.remove('scale-100');
+            content.classList.add('scale-95');
+        }
+
+        function showInfo() {
+            alert("Firewall (Güvenlik Duvarı) kuralları yukarıdan aşağıya doğru okunur.\n\nEğer 1 milyon istekten 800 bini reddedilecekse ve siz o kuralı en alta koyarsanız, sistem o 800 bin isteğe tek tek diğer kuralları sorar. Bu da gereksiz 'Kural Kontrolü' (işlemci yükü) yaratır.\n\nAmacınız: En çok sayıdaki paketi (ister izin verin ister reddedin) mümkün olan en üst sırada yakalayıp eşleştirmektir!");
+        }
+
+    </script>
+</body>
+</html>
